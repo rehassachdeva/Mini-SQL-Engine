@@ -171,10 +171,15 @@ bool executeQueryTypeB(hsql::TableRef* table, hsql::SelectStatement* selectStmt)
 
 }
 
-bool executeQueryTypeC1(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+
+	if(selectStmt->whereClause and selectStmt->whereClause->type==hsql::kExprOperator) {
+		cout<<selectStmt->whereClause->op_type<<endl;
+	}
     if(table->type==hsql::kTableName) {
         vector<hsql::Expr*> attributes=(*selectStmt->selectList);
         vector<int> cols;
+
         for(int i=0;i<attributes.size();i++) {
             vector<string>::iterator it;
             it=find(tables[table->name].begin(),tables[table->name].end(),attributes[i]->name);
@@ -189,14 +194,38 @@ bool executeQueryTypeC1(hsql::TableRef* table, hsql::SelectStatement* selectStmt
         ifstream tableFile((string)table->name+".csv");
         string line;
 
-        while(!tableFile.eof()) {
-            tableFile>>line;
-            vector<string> items=split(line,',');
-            int i;
-            for(i=0;i<cols.size()-1;i++) {
-                cout<<items[cols[i]]<<",";
-            }    		
-            cout<<items[cols[i]]<<endl;
+        for(int i=0;i<cols.size()-1;i++)
+            cout<<table->name<<"."<<tables[table->name][cols[i]]<<",";
+        cout<<table->name<<"."<<tables[table->name][cols[cols.size()-1]]<<endl;
+
+        if(!selectStmt->selectDistinct) {
+            while(!tableFile.eof()) {
+                tableFile>>line;
+                vector<string> items=split(line,',');
+                int i;
+                for(i=0;i<cols.size()-1;i++) {
+                    cout<<items[cols[i]]<<",";
+                }    		
+                cout<<items[cols[i]]<<endl;
+            }
+        }
+        else {
+            map<string,bool> outputs;
+            while(!tableFile.eof()) {
+            	string output;
+
+                tableFile>>line;
+                vector<string> items=split(line,',');
+                int i;
+                for(i=0;i<cols.size()-1;i++) {
+                    output+=items[cols[i]]+",";
+                }    		
+                output+=items[cols[i]]+"\n";
+                if(outputs.find(output)==outputs.end()) {
+                    outputs[output]=true;
+                    cout<<output;
+                }
+            }
         }
         return true;
     }
@@ -212,14 +241,13 @@ void executeQueryTypeC2Util(string pref, vector< pair<string, vector<hsql::Expr*
     string curTable=attrGrpsVec[start].first;
     vector<hsql::Expr* > curCols=attrGrpsVec[start].second;
 
-    //cout<<curTable<<" "<<start<<" "<<end<<" "<<curCols.size()<<endl;
     ifstream tableFile(curTable+".csv");
 
     string line;
 
     string curPref;
     while(!tableFile.eof()) {
-    	curPref=pref;
+        curPref=pref;
         tableFile>>line;
         vector<string> items=split(line,',');
         for(int i=0;i<curCols.size();i++) {
@@ -247,35 +275,35 @@ bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt
                 vector<string>::iterator pos=find(tables[attributes[i]->table].begin(),
                         tables[attributes[i]->table].end(),
                         attributes[i]->name);
-                    if(pos==tables[attributes[i]->table].end()) {
-                        cout<<"Column "<<attributes[i]->name<<" in table "<<attributes[i]->table<<" not found!\n";
-                        return true;
-                    }
-                    else {
-                        attrNum[attributes[i]]=pos-tables[attributes[i]->table].begin();
-                        attrGroups[attributes[i]->table].push_back(attributes[i]);
-                    }
+                if(pos==tables[attributes[i]->table].end()) {
+                    cout<<"Column "<<attributes[i]->name<<" in table "<<attributes[i]->table<<" not found!\n";
+                    return true;
+                }
+                else {
+                    attrNum[attributes[i]]=pos-tables[attributes[i]->table].begin();
+                    attrGroups[attributes[i]->table].push_back(attributes[i]);
+                }
             }
             else {
 
 
-            int cntNumTables=0;
+                int cntNumTables=0;
 
 
-            for (hsql::TableRef* tbl : *table->list) {
-                vector<string>::iterator pos=find(tables[tbl->name].begin(),
-                        tables[tbl->name].end(),
-                        attributes[i]->name);
-                if(pos!=tables[tbl->name].end()) {
-                    cntNumTables++;
-                    attributes[i]->table=tbl->name;
-                    attrNum[attributes[i]]=pos-tables[tbl->name].begin();
-                    attrGroups[(string)tbl->name].push_back(attributes[i]);
+                for (hsql::TableRef* tbl : *table->list) {
+                    vector<string>::iterator pos=find(tables[tbl->name].begin(),
+                            tables[tbl->name].end(),
+                            attributes[i]->name);
+                    if(pos!=tables[tbl->name].end()) {
+                        cntNumTables++;
+                        attributes[i]->table=tbl->name;
+                        attrNum[attributes[i]]=pos-tables[tbl->name].begin();
+                        attrGroups[(string)tbl->name].push_back(attributes[i]);
+                    }
+
                 }
-                
-            }
 
-            if(cntNumTables>1) {
+                if(cntNumTables>1) {
                     cout<<"Ambiguous column "<<attributes[i]->name<<"!\n";
                     return true;
                 }
@@ -283,8 +311,8 @@ bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt
                     cout<<"Column "<<attributes[i]->name<<" not found!\n";
                     return true;
                 }
+            }
         }
-    }
 
 
         map<string, vector<hsql::Expr*> >::iterator it;
@@ -328,6 +356,7 @@ int main(int argc, char *argv[]) {
 
         hsql::SQLStatement* stmt=result->getStatement(0);
 
+
         if(!validateScope(stmt, query)) continue;
 
         parseMetadata();
@@ -344,7 +373,7 @@ int main(int argc, char *argv[]) {
 
         if(executeQueryTypeB(table, selectStmt)) continue;
 
-        if(executeQueryTypeC1(table, selectStmt)) continue;
+        if(executeQueryTypeC1D(table, selectStmt)) continue;
 
         if(executeQueryTypeC2(table, selectStmt)) continue;
 
