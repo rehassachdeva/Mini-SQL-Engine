@@ -203,13 +203,111 @@ bool executeQueryTypeC1(hsql::TableRef* table, hsql::SelectStatement* selectStmt
     return false;
 }
 
-/*bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
-	if(table->type==hsql::kTableCrossProduct) {
-		
-	}
+void executeQueryTypeC2Util(string pref, vector< pair<string, vector<hsql::Expr*> > > attrGrpsVec,
+        map< hsql::Expr*, int> attrNum,
+        int start, int end) {
 
+
+
+    string curTable=attrGrpsVec[start].first;
+    vector<hsql::Expr* > curCols=attrGrpsVec[start].second;
+
+    //cout<<curTable<<" "<<start<<" "<<end<<" "<<curCols.size()<<endl;
+    ifstream tableFile(curTable+".csv");
+
+    string line;
+
+    string curPref;
+    while(!tableFile.eof()) {
+    	curPref=pref;
+        tableFile>>line;
+        vector<string> items=split(line,',');
+        for(int i=0;i<curCols.size();i++) {
+            curPref+=items[attrNum[curCols[i]]];
+            if(end==start and i==curCols.size()-1) curPref+="\n";
+            else curPref+=",";
+        }
+        if(start==end) cout<<curPref;
+        if(start<end) executeQueryTypeC2Util(curPref, attrGrpsVec,attrNum,start+1,end);            
+    }
 }
-*/
+
+bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+
+    if(table->type==hsql::kTableCrossProduct) {
+
+        vector<hsql::Expr*> attributes=(*selectStmt->selectList);
+
+        map< hsql::Expr*, int> attrNum;
+
+        map<string, vector<hsql::Expr*> > attrGroups;
+
+        for(int i=0;i<attributes.size();i++) {
+            if(attributes[i]->table) {
+                vector<string>::iterator pos=find(tables[attributes[i]->table].begin(),
+                        tables[attributes[i]->table].end(),
+                        attributes[i]->name);
+                    if(pos==tables[attributes[i]->table].end()) {
+                        cout<<"Column "<<attributes[i]->name<<" in table "<<attributes[i]->table<<" not found!\n";
+                        return true;
+                    }
+                    else {
+                        attrNum[attributes[i]]=pos-tables[attributes[i]->table].begin();
+                        attrGroups[attributes[i]->table].push_back(attributes[i]);
+                    }
+            }
+            else {
+
+
+            int cntNumTables=0;
+
+
+            for (hsql::TableRef* tbl : *table->list) {
+                vector<string>::iterator pos=find(tables[tbl->name].begin(),
+                        tables[tbl->name].end(),
+                        attributes[i]->name);
+                if(pos!=tables[tbl->name].end()) {
+                    cntNumTables++;
+                    attributes[i]->table=tbl->name;
+                    attrNum[attributes[i]]=pos-tables[tbl->name].begin();
+                    attrGroups[(string)tbl->name].push_back(attributes[i]);
+                }
+                
+            }
+
+            if(cntNumTables>1) {
+                    cout<<"Ambiguous column "<<attributes[i]->name<<"!\n";
+                    return true;
+                }
+                else if(cntNumTables==0) {
+                    cout<<"Column "<<attributes[i]->name<<" not found!\n";
+                    return true;
+                }
+        }
+    }
+
+
+        map<string, vector<hsql::Expr*> >::iterator it;
+        vector< pair<string, vector<hsql::Expr*> > > attrGrpsVec;
+
+        for(it=attrGroups.begin();it!=attrGroups.end();it++) {
+            vector<hsql::Expr*>::iterator ita;
+            for(ita=((*it).second).begin();ita!=((*it).second).end();ita++) {
+                cout<<(*it).first<<"."<<(*ita)->name;
+                if(it==(--(attrGroups.end())) and ita==((*it).second).end()-1)
+                    cout<<endl;
+                else cout<<",";
+            }
+            attrGrpsVec.push_back(make_pair((*it).first,(*it).second));
+        }
+
+
+        executeQueryTypeC2Util("", attrGrpsVec, attrNum, 0, attrGrpsVec.size()-1);
+        return true;
+    }
+    return false;
+}
+
 
 
 int main(int argc, char *argv[]) {
@@ -228,7 +326,7 @@ int main(int argc, char *argv[]) {
 
         if(!validateSyntax(result)) continue;
 
-    	hsql::SQLStatement* stmt=result->getStatement(0);
+        hsql::SQLStatement* stmt=result->getStatement(0);
 
         if(!validateScope(stmt, query)) continue;
 
@@ -247,8 +345,8 @@ int main(int argc, char *argv[]) {
         if(executeQueryTypeB(table, selectStmt)) continue;
 
         if(executeQueryTypeC1(table, selectStmt)) continue;
-        
-        /*if(executeQueryTypeC2(table, selectStmt)) continue;*/
+
+        if(executeQueryTypeC2(table, selectStmt)) continue;
 
     }    
     return 0;
