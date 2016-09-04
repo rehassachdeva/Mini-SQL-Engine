@@ -1,10 +1,8 @@
 #include<bits/stdc++.h>
 using namespace std;
 
-// include the sql parser
 #include "SQLParser.h"
 
-// contains printing utilities
 #include "sqlhelper.h"
 
 #define BEGAN_TABLE 0
@@ -68,7 +66,6 @@ bool validateSyntax(hsql::SQLParserResult* result) {
 }
 
 bool validateScope(hsql::SQLStatement* stmt, string query) {
-
     if(stmt->type()!=hsql::kStmtSelect) {
         cout<<"Sorry! Query \""<<query<<"\" is out of scope!\n";
         return false;
@@ -171,14 +168,66 @@ bool executeQueryTypeB(hsql::TableRef* table, hsql::SelectStatement* selectStmt)
 
 }
 
+bool checkConditions(map<int, vector<hsql::Expr*> > conditionCols, vector<string> items, bool fAnd, bool fOr, bool fOne) {
+    if(fOr==false and fAnd==false and fOne==false) return true;
+    map<int, vector<hsql::Expr*> >::iterator it;
+    vector<hsql::Expr*>::iterator it1;
+    int numTrue=0;
+    for(it=conditionCols.begin();it!=conditionCols.end();it++) {
+        for(it1=(it->second).begin();it1!=(it->second).end();it1++) {
+            hsql::Expr* condition=*it1;
+            int idx=(*it).first;
+            if(condition->op_char=='=' and stoll(items[idx])==condition->expr2->ival) numTrue++;
+            else if(condition->op_char=='>' and stoll(items[idx])>condition->expr2->ival) numTrue++;
+            else if(condition->op_char=='<' and stoll(items[idx])<condition->expr2->ival) numTrue++;
+            else if(condition->op_type==hsql::Expr::NOT_EQUALS and stoll(items[idx])!=condition->expr2->ival) numTrue++;
+            else if(condition->op_type==hsql::Expr::LESS_EQ and stoll(items[idx])<=condition->expr2->ival) numTrue++;
+            else if(condition->op_type==hsql::Expr::GREATER_EQ and stoll(items[idx])>=condition->expr2->ival) numTrue++;
+            else if(condition->expr2 and condition->expr2->op_type==hsql::Expr::UMINUS and -stoll(items[idx])==condition->expr2->expr->ival) numTrue++;
+        }
+    }
+    if(fAnd and numTrue<2) return false;
+    else if(numTrue==0) return false;
+    return true;
+}
+
 bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
 
-	if(selectStmt->whereClause and selectStmt->whereClause->type==hsql::kExprOperator) {
-		cout<<selectStmt->whereClause->op_type<<endl;
-	}
     if(table->type==hsql::kTableName) {
         vector<hsql::Expr*> attributes=(*selectStmt->selectList);
         vector<int> cols;
+        map<int, vector<hsql::Expr*> > conditionCols;
+
+        bool fAnd=false, fOr=false, fOne=false;
+
+        if(selectStmt->whereClause and
+                selectStmt->whereClause->type==hsql::kExprOperator and
+                (selectStmt->whereClause->op_type==hsql::Expr::SIMPLE_OP or
+                 selectStmt->whereClause->op_type==hsql::Expr::NOT_EQUALS or
+                 selectStmt->whereClause->op_type==hsql::Expr::LESS_EQ or
+                 selectStmt->whereClause->op_type==hsql::Expr::GREATER_EQ or
+                 selectStmt->whereClause->op_type==hsql::Expr::UMINUS)
+          ) {
+            fOne=true;
+
+            conditionCols[find(tables[table->name].begin(),
+                    tables[table->name].end(),
+                    (string)selectStmt->whereClause->expr->name)-tables[table->name].begin()].push_back(
+                        selectStmt->whereClause);
+        }
+
+        if(selectStmt->whereClause and
+                selectStmt->whereClause->type==hsql::kExprOperator and
+                selectStmt->whereClause->op_type==hsql::Expr::AND) fAnd=true;
+
+        if(selectStmt->whereClause and
+                selectStmt->whereClause->type==hsql::kExprOperator and
+                selectStmt->whereClause->op_type==hsql::Expr::OR) fOr=true;
+
+        if(fAnd or fOr) {
+            conditionCols[find(tables[table->name].begin(),tables[table->name].end(),(string)(selectStmt->whereClause->expr->expr->name))-tables[table->name].begin()].push_back(selectStmt->whereClause->expr);
+            conditionCols[find(tables[table->name].begin(),tables[table->name].end(),(string)(selectStmt->whereClause->expr2->expr->name))-tables[table->name].begin()].push_back(selectStmt->whereClause->expr2);
+        }
 
         for(int i=0;i<attributes.size();i++) {
             vector<string>::iterator it;
@@ -187,8 +236,9 @@ bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStm
                 cout<<"Column "<<attributes[i]->name<<" not found!\n";
                 return true;
             }
-            else
+            else {
                 cols.push_back(it-tables[table->name].begin());
+            }
         }
 
         ifstream tableFile((string)table->name+".csv");
@@ -200,22 +250,29 @@ bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStm
 
         if(!selectStmt->selectDistinct) {
             while(!tableFile.eof()) {
+                string output;
+
                 tableFile>>line;
                 vector<string> items=split(line,',');
+                if(!checkConditions(conditionCols,items,fAnd,fOr, fOne)) continue;
                 int i;
                 for(i=0;i<cols.size()-1;i++) {
-                    cout<<items[cols[i]]<<",";
-                }    		
-                cout<<items[cols[i]]<<endl;
+                    output+=items[cols[i]]+",";
+                }
+                output+=items[cols[i]]+"\n";
+                cout<<output;
+
             }
         }
         else {
             map<string,bool> outputs;
             while(!tableFile.eof()) {
-            	string output;
+                string output;
 
                 tableFile>>line;
                 vector<string> items=split(line,',');
+                if(!checkConditions(conditionCols,items,fAnd,fOr, fOne)) continue;
+
                 int i;
                 for(i=0;i<cols.size()-1;i++) {
                     output+=items[cols[i]]+",";
@@ -235,8 +292,6 @@ bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStm
 void executeQueryTypeC2Util(string pref, vector< pair<string, vector<hsql::Expr*> > > attrGrpsVec,
         map< hsql::Expr*, int> attrNum,
         int start, int end) {
-
-
 
     string curTable=attrGrpsVec[start].first;
     vector<hsql::Expr* > curCols=attrGrpsVec[start].second;
@@ -285,11 +340,7 @@ bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt
                 }
             }
             else {
-
-
                 int cntNumTables=0;
-
-
                 for (hsql::TableRef* tbl : *table->list) {
                     vector<string>::iterator pos=find(tables[tbl->name].begin(),
                             tables[tbl->name].end(),
@@ -328,7 +379,6 @@ bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt
             }
             attrGrpsVec.push_back(make_pair((*it).first,(*it).second));
         }
-
 
         executeQueryTypeC2Util("", attrGrpsVec, attrNum, 0, attrGrpsVec.size()-1);
         return true;
