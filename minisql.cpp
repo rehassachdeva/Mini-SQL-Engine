@@ -36,6 +36,8 @@ vector<string> split(const string &s, char delim) {
     string item;
     vector<string> tokens;
     while (getline(ss, item, delim)) {
+    	if(item[0]=='\'' or item[0]=='\"')
+    		item=item.substr(1,item.size()-2);
         tokens.push_back(item);
     }
     return tokens;
@@ -440,12 +442,12 @@ bool executeQueryTypeF() {
         vector<string> output;
 
         for(int i=0;i<cols1.size()-1;i++)
-        	cout<<table1<<"."<<tables[table1][cols1[i]]<<",";
+            cout<<table1<<"."<<tables[table1][cols1[i]]<<",";
         cout<<table1<<"."<<tables[table1][cols1.size()-1];
         if(cols2.size()>0)
-        	cout<<",";
+            cout<<",";
         for(int i=0;i<cols2.size()-1;i++)
-        	cout<<table2<<"."<<tables[table2][cols2[i]]<<",";
+            cout<<table2<<"."<<tables[table2][cols2[i]]<<",";
         cout<<table2<<"."<<tables[table2][cols2.size()-1]<<endl;
 
 
@@ -455,7 +457,7 @@ bool executeQueryTypeF() {
             tableFile1>>line1;
             vector<string> items1=split(line1,',');
             while(!tableFile2.eof()) {
-            	output.clear();
+                output.clear();
                 string line2;
                 tableFile2>>line2;
                 vector<string> items2=split(line2,',');
