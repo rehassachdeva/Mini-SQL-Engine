@@ -15,7 +15,20 @@ using namespace std;
 #define AGGSUM "sum"
 
 int numTables=0;
+bool fAnd;
+bool fOr;
+bool fOne;
+hsql::SQLParserResult* result;
+hsql::SQLStatement* stmt;
+hsql::SelectStatement* selectStmt;
+hsql::TableRef* table;
+hsql::Expr* whereClause;
 map<string, vector<string> > tables;
+vector<hsql::Expr*> attributes;
+map< hsql::Expr*, int> attrNum;
+map<string, vector<hsql::Expr*> > attrGroups;
+vector< pair<string, vector<hsql::Expr*> > > attrGrpsVec;
+map<string, vector< pair<int, hsql::Expr*> > > conditions;
 
 vector<string> split(const string &s, char delim) {
     stringstream ss(s);
@@ -54,7 +67,7 @@ void parseMetadata() {
     inFile.close();
 }
 
-bool validateSyntax(hsql::SQLParserResult* result) {
+bool validateSyntax() {
     if(!result->isValid) {
         cout<<"Invalid SQL!\n";
         cout<<result->errorMsg<<endl;
@@ -65,15 +78,19 @@ bool validateSyntax(hsql::SQLParserResult* result) {
     return true;
 }
 
-bool validateScope(hsql::SQLStatement* stmt, string query) {
+bool validateScope(string query) {
     if(stmt->type()!=hsql::kStmtSelect) {
+        cout<<"Sorry! Query \""<<query<<"\" is out of scope!\n";
+        return false;
+    }
+    if(selectStmt->selectDistinct and (*selectStmt->selectList).size()!=1) {
         cout<<"Sorry! Query \""<<query<<"\" is out of scope!\n";
         return false;
     }
     return true;
 }
 
-bool checkExistsSingle(hsql::TableRef* table) {
+bool checkExistsSingle() {
     if(table->type==hsql::kTableName and tables.find(table->name)==tables.end()) {
         cout<<"Table "<<table->name<<" not found!\n";
         return false;
@@ -81,22 +98,158 @@ bool checkExistsSingle(hsql::TableRef* table) {
     return true;
 }
 
-bool checkExistsMultiple(hsql::TableRef* table) {
+bool checkExistsMultiple() {
     if(table->type==hsql::kTableCrossProduct) {
         for (hsql::TableRef* tbl : *table->list) {
             if(tables.find(tbl->name)==tables.end()) {
                 cout<<"Table "<<tbl->name<<" not found!\n";
-                return false;;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool checkAmbiguityAndPresence() {
+    if(attributes.size()==1 and attributes[0]->type==hsql::kExprStar) return true;
+    if(attributes.size()==1 and attributes[0]->type==hsql::kExprFunctionRef) return true;
+    for(int i=0;i<attributes.size();i++) {
+        if(attributes[i]->table) {
+            vector<string>::iterator pos=find(tables[attributes[i]->table].begin(),
+                    tables[attributes[i]->table].end(),
+                    attributes[i]->name);
+            if(pos==tables[attributes[i]->table].end()) {
+                cout<<"Column "<<attributes[i]->name<<" in table "<<attributes[i]->table<<" not found!\n";
+                return false;
+            }
+            else {
+                attrNum[attributes[i]]=pos-tables[attributes[i]->table].begin();
+                attrGroups[attributes[i]->table].push_back(attributes[i]);
+            }
+        }
+        else {
+            int cntNumTables=0;
+            if(table->type==hsql::kTableCrossProduct) {
+                for (hsql::TableRef* tbl : *table->list) {
+                    vector<string>::iterator pos=find(tables[tbl->name].begin(),
+                            tables[tbl->name].end(),
+                            attributes[i]->name);
+                    if(pos!=tables[tbl->name].end()) {
+                        cntNumTables++;
+                        attributes[i]->table=tbl->name;
+                        attrNum[attributes[i]]=pos-tables[tbl->name].begin();
+                        attrGroups[(string)tbl->name].push_back(attributes[i]);
+                    }
+                }
+            }
+            else if(table->type==hsql::kTableName) {
+                vector<string>::iterator pos=find(tables[table->name].begin(),
+                        tables[table->name].end(),
+                        attributes[i]->name);
+                if(pos!=tables[table->name].end()) {
+                    cntNumTables++;
+                    attributes[i]->table=table->name;
+                    attrNum[attributes[i]]=pos-tables[table->name].begin();
+                    attrGroups[(string)table->name].push_back(attributes[i]);
+                }
+
+            }
+            if(cntNumTables>1) {
+                cout<<"Ambiguous column "<<attributes[i]->name<<"!\n";
+                return false;
+            }
+            else if(cntNumTables==0) {
+                cout<<"Column "<<attributes[i]->name<<" not found!\n";
+                return false;
             }
         }
     }
     return true;
 }
 
-bool executeQueryTypeA(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+bool checkExistsWhere(hsql::Expr* expr) {
+    if(expr->type==hsql::kExprColumnRef) {
+        if(expr->table) {
+            if(tables.find(expr->table)==tables.end()) {
+                cout<<"Table "<<expr->table<<" not found!\n";
+                return false;
+            }
+        }
+        else if(!expr->table) {
+            int cntNumTables=0;
+            if(table->type==hsql::kTableCrossProduct) {
+                for (hsql::TableRef* tbl : *table->list) {
+                    vector<string>::iterator pos=find(tables[tbl->name].begin(),
+                            tables[tbl->name].end(),
+                            expr->name);
+                    if(pos!=tables[tbl->name].end()) {
+                        cntNumTables++;
+                    }
+                }
+            }
+            else if(table->type==hsql::kTableName) {
+                vector<string>::iterator pos=find(tables[table->name].begin(),
+                        tables[table->name].end(),
+                        expr->name);
+                if(pos!=tables[table->name].end()) {
+                    cntNumTables++;
+                }
+            }
+            if(cntNumTables>1) {
+                cout<<"Ambiguous column "<<expr->name<<"!\n";
+                return false;
+            }
+            else if(cntNumTables==0) {
+                cout<<"Column "<<expr->name<<" not found!\n";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool checkWhereSemantics() {
+    if(!whereClause) return true;
+    fAnd=false;
+    fOr=false;
+    fOne=false;
+    if(whereClause->type==hsql::kExprOperator and
+            (whereClause->op_type==hsql::Expr::SIMPLE_OP or
+             whereClause->op_type==hsql::Expr::NOT_EQUALS or
+             whereClause->op_type==hsql::Expr::LESS_EQ or
+             whereClause->op_type==hsql::Expr::GREATER_EQ or
+             whereClause->op_type==hsql::Expr::UMINUS)
+      ) {
+        fOne=true;
+
+        if(!checkExistsWhere(whereClause->expr)) return false;
+        if(!checkExistsWhere(whereClause->expr2)) return false;
+
+    }
+
+    if(whereClause and
+            whereClause->type==hsql::kExprOperator and
+            whereClause->op_type==hsql::Expr::AND) fAnd=true;
+
+    if(whereClause and
+            whereClause->type==hsql::kExprOperator and
+            whereClause->op_type==hsql::Expr::OR) fOr=true;
+
+    if(fAnd or fOr) {
+        if(!checkExistsWhere(whereClause->expr->expr)) return false;
+        if(!checkExistsWhere(whereClause->expr->expr2)) return false;
+        if(!checkExistsWhere(whereClause->expr2->expr)) return false;
+        if(!checkExistsWhere(whereClause->expr2->expr2)) return false;
+    }
+
+    return true;
+}
+
+bool executeQueryTypeA() {
     if(table->type==hsql::kTableName and 
-            (*selectStmt->selectList).size()==1 and 
-            (*selectStmt->selectList)[0]->type==hsql::kExprStar) {
+            attributes.size()==1 and 
+            attributes[0]->type==hsql::kExprStar) {
 
         ifstream tableFile((string)table->name+".csv");
         int i=0;
@@ -114,12 +267,12 @@ bool executeQueryTypeA(hsql::TableRef* table, hsql::SelectStatement* selectStmt)
     return false;
 }
 
-bool executeQueryTypeB(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+bool executeQueryTypeB() {
     if(table->type==hsql::kTableName and
-            (*selectStmt->selectList).size()==1 and
-            (*selectStmt->selectList)[0]->type==hsql::kExprFunctionRef) {
+            attributes.size()==1 and
+            attributes[0]->type==hsql::kExprFunctionRef) {
 
-        string attr=(*selectStmt->selectList)[0]->expr->name;
+        string attr=attributes[0]->expr->name;
         vector<string>::iterator it;
         it=find(tables[table->name].begin(),tables[table->name].end(),attr);
 
@@ -191,10 +344,9 @@ bool checkConditions(map<int, vector<hsql::Expr*> > conditionCols, vector<string
     return true;
 }
 
-bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+bool executeQueryTypeC1DE() {
 
     if(table->type==hsql::kTableName) {
-        vector<hsql::Expr*> attributes=(*selectStmt->selectList);
         vector<int> cols;
         map<int, vector<hsql::Expr*> > conditionCols;
 
@@ -210,10 +362,17 @@ bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStm
           ) {
             fOne=true;
 
-            conditionCols[find(tables[table->name].begin(),
+            vector<string>::iterator it=find(tables[table->name].begin(),
                     tables[table->name].end(),
-                    (string)selectStmt->whereClause->expr->name)-tables[table->name].begin()].push_back(
-                        selectStmt->whereClause);
+                    (string)selectStmt->whereClause->expr->name);
+
+            if(it==tables[table->name].end()) {
+                cout<<"Column "<<(string)selectStmt->whereClause->expr->name<<" not found!\n";
+                return true;
+            }
+
+            conditionCols[it-tables[table->name].begin()].push_back(
+                    selectStmt->whereClause);
         }
 
         if(selectStmt->whereClause and
@@ -289,9 +448,7 @@ bool executeQueryTypeC1D(hsql::TableRef* table, hsql::SelectStatement* selectStm
     return false;
 }
 
-void executeQueryTypeC2Util(string pref, vector< pair<string, vector<hsql::Expr*> > > attrGrpsVec,
-        map< hsql::Expr*, int> attrNum,
-        int start, int end) {
+void executeQueryTypeC2Util(string pref, int start, int end) {
 
     string curTable=attrGrpsVec[start].first;
     vector<hsql::Expr* > curCols=attrGrpsVec[start].second;
@@ -305,69 +462,22 @@ void executeQueryTypeC2Util(string pref, vector< pair<string, vector<hsql::Expr*
         curPref=pref;
         tableFile>>line;
         vector<string> items=split(line,',');
+        // if(!checkConditions(conditionCols,items,fAnd,fOr, fOne)) continue;
         for(int i=0;i<curCols.size();i++) {
             curPref+=items[attrNum[curCols[i]]];
             if(end==start and i==curCols.size()-1) curPref+="\n";
             else curPref+=",";
         }
         if(start==end) cout<<curPref;
-        if(start<end) executeQueryTypeC2Util(curPref, attrGrpsVec,attrNum,start+1,end);            
+        if(start<end) executeQueryTypeC2Util(curPref, start+1,end);            
     }
 }
 
-bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+bool executeQueryTypeC2() {
 
     if(table->type==hsql::kTableCrossProduct) {
 
-        vector<hsql::Expr*> attributes=(*selectStmt->selectList);
-
-        map< hsql::Expr*, int> attrNum;
-
-        map<string, vector<hsql::Expr*> > attrGroups;
-
-        for(int i=0;i<attributes.size();i++) {
-            if(attributes[i]->table) {
-                vector<string>::iterator pos=find(tables[attributes[i]->table].begin(),
-                        tables[attributes[i]->table].end(),
-                        attributes[i]->name);
-                if(pos==tables[attributes[i]->table].end()) {
-                    cout<<"Column "<<attributes[i]->name<<" in table "<<attributes[i]->table<<" not found!\n";
-                    return true;
-                }
-                else {
-                    attrNum[attributes[i]]=pos-tables[attributes[i]->table].begin();
-                    attrGroups[attributes[i]->table].push_back(attributes[i]);
-                }
-            }
-            else {
-                int cntNumTables=0;
-                for (hsql::TableRef* tbl : *table->list) {
-                    vector<string>::iterator pos=find(tables[tbl->name].begin(),
-                            tables[tbl->name].end(),
-                            attributes[i]->name);
-                    if(pos!=tables[tbl->name].end()) {
-                        cntNumTables++;
-                        attributes[i]->table=tbl->name;
-                        attrNum[attributes[i]]=pos-tables[tbl->name].begin();
-                        attrGroups[(string)tbl->name].push_back(attributes[i]);
-                    }
-
-                }
-
-                if(cntNumTables>1) {
-                    cout<<"Ambiguous column "<<attributes[i]->name<<"!\n";
-                    return true;
-                }
-                else if(cntNumTables==0) {
-                    cout<<"Column "<<attributes[i]->name<<" not found!\n";
-                    return true;
-                }
-            }
-        }
-
-
         map<string, vector<hsql::Expr*> >::iterator it;
-        vector< pair<string, vector<hsql::Expr*> > > attrGrpsVec;
 
         for(it=attrGroups.begin();it!=attrGroups.end();it++) {
             vector<hsql::Expr*>::iterator ita;
@@ -380,13 +490,30 @@ bool executeQueryTypeC2(hsql::TableRef* table, hsql::SelectStatement* selectStmt
             attrGrpsVec.push_back(make_pair((*it).first,(*it).second));
         }
 
-        executeQueryTypeC2Util("", attrGrpsVec, attrNum, 0, attrGrpsVec.size()-1);
+        executeQueryTypeC2Util("", 0, attrGrpsVec.size()-1);
         return true;
     }
     return false;
 }
 
+bool executeQueryTypeF(hsql::TableRef* table, hsql::SelectStatement* selectStmt) {
+    if(selectStmt->whereClause and
+            selectStmt->whereClause->type==hsql::kExprOperator and
+            (selectStmt->whereClause->op_type==hsql::Expr::SIMPLE_OP or
+             selectStmt->whereClause->op_type==hsql::Expr::NOT_EQUALS or
+             selectStmt->whereClause->op_type==hsql::Expr::LESS_EQ or
+             selectStmt->whereClause->op_type==hsql::Expr::GREATER_EQ or
+             selectStmt->whereClause->op_type==hsql::Expr::UMINUS) and
+            table->type==hsql::kTableCrossProduct and
+            (*table->list).size()==2 and
+            selectStmt->whereClause->expr->type==hsql::kExprColumnRef and
+            selectStmt->whereClause->expr2->type==hsql::kExprColumnRef) {
 
+
+        return true;
+    }
+    return false;
+}
 
 int main(int argc, char *argv[]) {
 
@@ -400,34 +527,42 @@ int main(int argc, char *argv[]) {
 
     for(string query : queries) {
 
-        hsql::SQLParserResult* result=hsql::SQLParser::parseSQLString(query);
+        result=hsql::SQLParser::parseSQLString(query);
 
-        if(!validateSyntax(result)) continue;
+        if(!validateSyntax()) continue;
 
-        hsql::SQLStatement* stmt=result->getStatement(0);
+        stmt=result->getStatement(0);
 
+        selectStmt=(hsql::SelectStatement*)stmt;
 
-        if(!validateScope(stmt, query)) continue;
+        if(!validateScope(query)) continue;
 
         parseMetadata();
 
-        hsql::SelectStatement* selectStmt=(hsql::SelectStatement*)stmt;
+        attributes=(*selectStmt->selectList);
 
-        hsql::TableRef* table=selectStmt->fromTable;
+        table=selectStmt->fromTable;
 
-        if(!checkExistsSingle(table)) continue;      
+        if(!checkExistsSingle()) continue;      
 
-        if(!checkExistsMultiple(table)) continue;
+        if(!checkExistsMultiple()) continue;
 
-        if(executeQueryTypeA(table, selectStmt)) continue;
+        if(!checkAmbiguityAndPresence()) continue;
 
-        if(executeQueryTypeB(table, selectStmt)) continue;
+        whereClause=selectStmt->whereClause;
 
-        if(executeQueryTypeC1D(table, selectStmt)) continue;
+        if(!checkWhereSemantics()) continue;
 
-        if(executeQueryTypeC2(table, selectStmt)) continue;
+        //if(executeQueryTypeF()) continue;
+
+        //if(executeQueryTypeA()) continue;
+
+        //if(executeQueryTypeB()) continue;
+
+        //if(executeQueryTypeC1DE()) continue;
+
+        //if(executeQueryTypeC2()) continue;
 
     }    
     return 0;
 }
-
