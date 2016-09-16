@@ -4,11 +4,11 @@ sql-parser library https://github.com/hyrise/sql-parser
 
 Compile
 -------
-```make```
+``make``
 
 Run
 ---
-```./minisql "Select * from table1;"```
+``./minisql "Select * from table1;"``
 
 Commands
 --------
